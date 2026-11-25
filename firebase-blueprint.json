@@ -1,0 +1,368 @@
+{
+  "entities": {
+    "SchoolTenant": {
+      "title": "SchoolTenant",
+      "description": "Multi-tenant school account and subscription state",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "pattern": "^SCH[0-9]{3,}$" },
+        "schoolCode": { "type": "string", "maxLength": 64 },
+        "schoolName": { "type": "string", "maxLength": 200 },
+        "address": { "type": "string", "maxLength": 500 },
+        "contactNumber": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "format": "email" },
+        "principalName": { "type": "string", "maxLength": 150 },
+        "adminName": { "type": "string", "maxLength": 150 },
+        "adminEmail": { "type": "string", "format": "email" },
+        "adminUid": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["pending", "active", "expired", "suspended"] }
+      },
+      "required": ["schoolId", "schoolCode", "schoolName", "status"]
+    },
+    "SubscriptionPlan": {
+      "title": "SubscriptionPlan",
+      "description": "Platform SaaS subscription plan catalog",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+$" },
+        "name": { "type": "string" },
+        "nameBn": { "type": "string" },
+        "durationDays": { "type": "number" },
+        "priceBdt": { "type": "number" },
+        "discountPercent": { "type": "number" },
+        "badgeText": { "type": "string" },
+        "features": { "type": "array" },
+        "sortOrder": { "type": "number" },
+        "isCustom": { "type": "boolean" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["id", "name", "durationDays", "priceBdt"]
+    },
+    "PaymentRequest": {
+      "title": "PaymentRequest",
+      "description": "Manual subscription payment request (bKash, Nagad, Bank Transfer)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "planId": { "type": "string" },
+        "amount": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["bKash", "Nagad", "Bank Transfer"] },
+        "senderNumber": { "type": "string" },
+        "transactionId": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] }
+      },
+      "required": ["id", "schoolId", "planId", "amount", "transactionId", "status"]
+    },
+    "SubscriptionHistory": {
+      "title": "SubscriptionHistory",
+      "description": "Audit log of school subscription activations, renewals, and suspensions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "eventType": { "type": "string" },
+        "planId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "schoolId", "eventType", "createdAt"]
+    },
+    "SaaSUser": {
+      "title": "SaaSUser",
+      "description": "Firebase Auth provisioned school user without plaintext password",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "username": { "type": "string" },
+        "usernameNormalized": { "type": "string" },
+        "phoneNormalized": { "type": "string" },
+        "displayName": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "schoolRole": { "type": "string" },
+        "phone": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "disabled"] }
+      },
+      "required": ["uid", "email", "schoolId", "schoolRole", "status"]
+    },
+    "TenantSlice": {
+      "title": "TenantSlice",
+      "description": "Tenant-isolated ERP data slice stored under schools/{schoolId}/slices",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string" },
+        "slice": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["schoolId", "slice"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Two-way support conversation thread between a school user and Master Admin",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "schoolCode": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdByEmail": { "type": "string" },
+        "createdByRole": { "type": "string" },
+        "subject": { "type": "string", "maxLength": 240 },
+        "category": { "type": "string", "enum": ["technical", "billing", "training", "data", "other"] },
+        "status": { "type": "string", "enum": ["open", "replied", "resolved"] },
+        "lastMessagePreview": { "type": "string", "maxLength": 500 },
+        "lastSenderRole": { "type": "string", "enum": ["school", "master_admin"] },
+        "unreadByMaster": { "type": "boolean" },
+        "unreadBySchool": { "type": "boolean" },
+        "messageCount": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": [
+        "id",
+        "schoolId",
+        "schoolName",
+        "createdByUid",
+        "createdByEmail",
+        "createdByRole",
+        "subject",
+        "category",
+        "status",
+        "lastSenderRole",
+        "unreadByMaster",
+        "unreadBySchool",
+        "messageCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SupportMessage": {
+      "title": "SupportMessage",
+      "description": "Individual message inside a support ticket with optional compressed screenshot attachments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ticketId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "ticketCreatorUid": { "type": "string" },
+        "senderUid": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderEmail": { "type": "string" },
+        "senderRole": { "type": "string", "enum": ["school", "master_admin"] },
+        "senderSchoolRole": { "type": "string" },
+        "text": { "type": "string", "maxLength": 3500 },
+        "imageUrls": { "type": "array", "maxItems": 3 },
+        "createdAt": { "type": "string" }
+      },
+      "required": [
+        "id",
+        "ticketId",
+        "schoolId",
+        "senderUid",
+        "senderName",
+        "senderRole",
+        "text",
+        "imageUrls",
+        "createdAt"
+      ]
+    },
+    "SupportVideo": {
+      "title": "SupportVideo",
+      "description": "Sanitized YouTube tutorial video embeds uploaded by Master Admin for school Super Admins and Admins",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "category": {
+          "type": "string",
+          "enum": ["getting_started", "fees", "attendance", "exams", "students", "settings", "other"]
+        },
+        "videoId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]{11}$" },
+        "embedUrl": { "type": "string", "maxLength": 300 },
+        "watchUrl": { "type": "string", "maxLength": 300 },
+        "thumbnailUrl": { "type": "string", "maxLength": 300 },
+        "audience": { "type": "string", "enum": ["admins", "all"] },
+        "sortOrder": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "createdByName": { "type": "string", "maxLength": 150 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": [
+        "id",
+        "title",
+        "category",
+        "videoId",
+        "embedUrl",
+        "watchUrl",
+        "thumbnailUrl",
+        "audience",
+        "sortOrder",
+        "isActive",
+        "createdByUid",
+        "createdByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PublicSchoolWebsite": {
+      "title": "PublicSchoolWebsite",
+      "description": "Sanitized non-PII public website snapshot per school tenant",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "maxLength": 128 },
+        "schoolCode": { "type": "string", "maxLength": 64 },
+        "isPublished": { "type": "boolean" },
+        "updatedAt": { "type": "string", "maxLength": 64 },
+        "schoolInfo": { "type": "object" },
+        "stats": { "type": "object" },
+        "notices": { "type": "array" },
+        "blogPosts": { "type": "array" },
+        "academicPrograms": { "type": "array" },
+        "activeClasses": { "type": "array" },
+        "websiteConfig": { "type": "object" }
+      },
+      "required": [
+        "schoolId",
+        "schoolCode",
+        "isPublished",
+        "updatedAt",
+        "schoolInfo",
+        "stats",
+        "notices",
+        "blogPosts",
+        "academicPrograms",
+        "activeClasses",
+        "websiteConfig"
+      ]
+    },
+    "PublicAdmissionEnquiry": {
+      "title": "PublicAdmissionEnquiry",
+      "description": "Online admission application submitted via a school public website",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "schoolId": { "type": "string", "maxLength": 128 },
+        "applicationNo": { "type": "string", "maxLength": 64 },
+        "photoUrl": { "type": "string", "maxLength": 250000 },
+        "applicantNameEn": { "type": "string", "maxLength": 160 },
+        "applicantNameBn": { "type": "string", "maxLength": 160 },
+        "applyingClass": { "type": "string", "maxLength": 60 },
+        "gender": { "type": "string", "enum": ["Male", "Female"] },
+        "dob": { "type": "string", "maxLength": 32 },
+        "bloodGroup": { "type": "string", "maxLength": 16 },
+        "guardianName": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "email": { "type": "string", "maxLength": 160 },
+        "address": { "type": "string", "maxLength": 400 },
+        "previousSchool": { "type": "string", "maxLength": 200 },
+        "gpa": { "type": "string", "maxLength": 20 },
+        "remarks": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["Pending", "Approved", "Rejected", "Enrolled"] },
+        "appliedDate": { "type": "string", "maxLength": 32 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": [
+        "id",
+        "schoolId",
+        "applicantNameEn",
+        "applicantNameBn",
+        "applyingClass",
+        "gender",
+        "dob",
+        "guardianName",
+        "phone",
+        "address",
+        "status",
+        "appliedDate",
+        "createdAt"
+      ]
+    },
+    "PublicWebsiteMessage": {
+      "title": "PublicWebsiteMessage",
+      "description": "Contact form message submitted via a school public website",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "schoolId": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "email": { "type": "string", "maxLength": 160 },
+        "subject": { "type": "string", "maxLength": 200 },
+        "message": { "type": "string", "maxLength": 3000 },
+        "sentAt": { "type": "string", "maxLength": 64 },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": [
+        "id",
+        "schoolId",
+        "senderName",
+        "phone",
+        "message",
+        "sentAt",
+        "isRead",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/schools/{schoolId}": {
+      "schema": "SchoolTenant",
+      "description": "Multi-tenant school root records and subscription state"
+    },
+    "/schools/{schoolId}/slices/{sliceId}": {
+      "schema": "TenantSlice",
+      "description": "Isolated school ERP slices per tenant"
+    },
+    "/schools/{schoolId}/users/{uid}": {
+      "schema": "SaaSUser",
+      "description": "School-scoped provisioned user directory"
+    },
+    "/subscription_plans/{planId}": {
+      "schema": "SubscriptionPlan",
+      "description": "Platform subscription plans"
+    },
+    "/payment_requests/{requestId}": {
+      "schema": "PaymentRequest",
+      "description": "Manual subscription renewal payment requests"
+    },
+    "/subscription_history/{historyId}": {
+      "schema": "SubscriptionHistory",
+      "description": "Immutable subscription audit trail"
+    },
+    "/saas_users/{uid}": {
+      "schema": "SaaSUser",
+      "description": "Global user-to-school index"
+    },
+    "/support_tickets/{ticketId}": {
+      "schema": "SupportTicket",
+      "description": "Two-way school support tickets"
+    },
+    "/support_tickets/{ticketId}/messages/{messageId}": {
+      "schema": "SupportMessage",
+      "description": "Support chat messages with screenshot attachments"
+    },
+    "/support_videos/{videoId}": {
+      "schema": "SupportVideo",
+      "description": "YouTube tutorial video embeds uploaded by Master Admin"
+    },
+    "/public_websites/{schoolId}": {
+      "schema": "PublicSchoolWebsite",
+      "description": "Non-PII public homepage configuration, notices, blogs, and aggregate stats per school"
+    },
+    "/public_websites/{schoolId}/public_admissions/{admissionId}": {
+      "schema": "PublicAdmissionEnquiry",
+      "description": "Write-only public online admission intake queue for school admins"
+    },
+    "/public_websites/{schoolId}/public_messages/{messageId}": {
+      "schema": "PublicWebsiteMessage",
+      "description": "Write-only public contact form inbox for school admins"
+    }
+  }
+}

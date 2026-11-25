@@ -1,0 +1,616 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Hardened Global Helpers
+    // -------------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isMasterAdmin() {
+      return isSignedIn()
+        && (
+          request.auth.token.isMasterAdmin == true
+          || request.auth.token.schoolRole == 'master_admin'
+          || (isVerifiedUser() && request.auth.token.email == 'mahidyafeemugdho@gmail.com')
+          || exists(/databases/$(database)/documents/master_admins/$(request.auth.uid))
+        );
+    }
+
+    function hasSchoolClaim(schoolId) {
+      return isSignedIn()
+        && request.auth.token.schoolId is string
+        && request.auth.token.schoolId == schoolId;
+    }
+
+    function isSchoolAdmin(schoolId) {
+      return hasSchoolClaim(schoolId)
+        && request.auth.token.schoolRole in ['super_admin', 'admin'];
+    }
+
+    function isSchoolStaff(schoolId) {
+      return hasSchoolClaim(schoolId)
+        && request.auth.token.schoolRole in [
+          'super_admin',
+          'admin',
+          'teacher',
+          'accountant',
+          'staff',
+          'librarian',
+          'receptionist',
+          'gatekeeper'
+        ];
+    }
+
+    function isSchoolActive(schoolId) {
+      let schoolDoc = get(/databases/$(database)/documents/schools/$(schoolId)).data;
+      return schoolDoc.status == 'active'
+        && schoolDoc.subscription.status == 'Active'
+        && schoolDoc.subscription.expiryTimestamp > request.time;
+    }
+
+    // -------------------------------------------------------------------------
+    // Platform-Level Collections (Master Admin & Trusted Backend)
+    // -------------------------------------------------------------------------
+    match /master_admins/{uid} {
+      allow get: if isSignedIn() && request.auth.uid == uid;
+      allow list, write: if false;
+    }
+
+    match /platform_counters/{counterId} {
+      allow read, write: if false;
+    }
+
+    match /subscription_plans/{planId} {
+      allow get, list: if isSignedIn();
+      allow write: if isMasterAdmin();
+    }
+
+    match /payment_trx_index/{trxId} {
+      allow read, write: if false;
+    }
+
+    match /payment_requests/{requestId} {
+      allow get: if isValidId(requestId) && (
+        isMasterAdmin() ||
+        (isSignedIn() && resource.data.schoolId == request.auth.token.schoolId)
+      );
+      allow list: if isMasterAdmin() || (
+        isSignedIn()
+        && request.auth.token.schoolId is string
+        && resource.data.schoolId == request.auth.token.schoolId
+      );
+      // Created and approved strictly via trusted backend Admin SDK
+      allow create, update, delete: if false;
+    }
+
+    match /subscription_history/{historyId} {
+      allow get: if isValidId(historyId) && (
+        isMasterAdmin() ||
+        (isSignedIn() && resource.data.schoolId == request.auth.token.schoolId)
+      );
+      allow list: if isMasterAdmin() || (
+        isSignedIn()
+        && request.auth.token.schoolId is string
+        && resource.data.schoolId == request.auth.token.schoolId
+      );
+      allow create, update, delete: if false;
+    }
+
+    match /saas_users/{uid} {
+      allow get: if isValidId(uid) && (
+        isMasterAdmin() ||
+        (isSignedIn() && request.auth.uid == uid) ||
+        (isSignedIn() && resource.data.schoolId == request.auth.token.schoolId && isSchoolAdmin(resource.data.schoolId))
+      );
+      allow list: if isMasterAdmin() || (
+        isSignedIn()
+        && request.auth.token.schoolRole in ['super_admin', 'admin']
+        && resource.data.schoolId == request.auth.token.schoolId
+      );
+      // Users cannot create or mutate their own schoolId/schoolRole/claims
+      allow create, update, delete: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // School Tenant Root & Isolated Tenant Subcollections
+    // -------------------------------------------------------------------------
+    match /schools/{schoolId} {
+      // School users can read their own school status & expiry notice even when expired
+      allow get: if isValidId(schoolId) && (isMasterAdmin() || hasSchoolClaim(schoolId));
+      allow list: if isMasterAdmin();
+      // Only Master Admin / trusted backend can create, suspend, activate, or alter school subscription
+      allow create, update, delete: if false;
+
+      // Tenant Users Subcollection
+      match /users/{uid} {
+        allow get: if isValidId(schoolId) && isValidId(uid) && (
+          isMasterAdmin() ||
+          (hasSchoolClaim(schoolId) && (request.auth.uid == uid || isSchoolAdmin(schoolId)))
+        );
+        allow list: if isValidId(schoolId) && (isMasterAdmin() || isSchoolAdmin(schoolId));
+        allow create, update, delete: if false;
+      }
+
+      // Tenant Data Slices (Replaces global school_sync for Multi-Tenant SaaS)
+      match /slices/{sliceId} {
+        allow get: if isValidId(schoolId) && isValidId(sliceId) && (
+          isMasterAdmin() ||
+          (hasSchoolClaim(schoolId) && isSchoolActive(schoolId))
+        );
+        allow list: if isValidId(schoolId) && (
+          isMasterAdmin() ||
+          (hasSchoolClaim(schoolId) && isSchoolActive(schoolId))
+        );
+        allow create, update: if isValidId(schoolId) && isValidId(sliceId)
+          && isVerifiedUser()
+          && request.resource.data.schoolId == schoolId
+          && (
+            isMasterAdmin() ||
+            (isSchoolStaff(schoolId) && isSchoolActive(schoolId))
+          );
+        allow delete: if isValidId(schoolId) && isValidId(sliceId) && isMasterAdmin();
+      }
+
+      // Tenant Domain Subcollections (students, staff, attendance, fees, exams, etc.)
+      match /{subCollection}/{docId} {
+        allow get: if isValidId(schoolId) && isValidId(docId)
+          && subCollection != 'users'
+          && subCollection != 'slices'
+          && (
+            isMasterAdmin() ||
+            (hasSchoolClaim(schoolId) && isSchoolActive(schoolId))
+          );
+        allow list: if isValidId(schoolId)
+          && subCollection != 'users'
+          && subCollection != 'slices'
+          && (
+            isMasterAdmin() ||
+            (hasSchoolClaim(schoolId) && isSchoolActive(schoolId))
+          );
+        allow create, update: if isValidId(schoolId) && isValidId(docId)
+          && subCollection != 'users'
+          && subCollection != 'slices'
+          && isVerifiedUser()
+          && request.resource.data.schoolId == schoolId
+          && (
+            isMasterAdmin() ||
+            (isSchoolStaff(schoolId) && isSchoolActive(schoolId))
+          );
+        allow delete: if isValidId(schoolId) && isValidId(docId)
+          && subCollection != 'users'
+          && subCollection != 'slices'
+          && (
+            isMasterAdmin() ||
+            (isSchoolAdmin(schoolId) && isSchoolActive(schoolId))
+          );
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // Legacy Single-School Collections (Locked down to Master Admin / Migration only)
+    // -------------------------------------------------------------------------
+    match /school_sync/{syncId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /school_settings/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /config/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /students/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /staff/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /homework/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /homework_submissions/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /attendance/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /attendance_audit_logs/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /student_performance/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /exams/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /marks/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /feeInvoices/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /feePayments/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /feeHeads/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /expenses/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /notices/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /blog_posts/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    match /online_payments/{docId} {
+      allow read, write: if isMasterAdmin();
+    }
+    // -------------------------------------------------------------------------
+    // Support Team Two-Way Tickets & Screenshot Chat
+    // -------------------------------------------------------------------------
+    function isValidSupportTicket(data, ticketId) {
+      return data.keys().hasAll([
+          'id', 'schoolId', 'schoolName', 'createdByUid', 'createdByEmail',
+          'createdByRole', 'subject', 'category', 'status',
+          'lastSenderRole', 'unreadByMaster', 'unreadBySchool',
+          'messageCount', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'schoolId', 'schoolName', 'schoolCode', 'createdByUid',
+          'createdByName', 'createdByEmail', 'createdByRole',
+          'subject', 'category', 'status', 'lastMessagePreview',
+          'lastSenderRole', 'unreadByMaster', 'unreadBySchool',
+          'messageCount', 'createdAt', 'updatedAt'
+        ])
+        && data.id == ticketId
+        && data.schoolId is string && data.schoolId.size() >= 1 && data.schoolId.size() <= 128
+        && data.schoolName is string && data.schoolName.size() >= 1 && data.schoolName.size() <= 200
+        && (!('schoolCode' in data) || (data.schoolCode is string && data.schoolCode.size() <= 64))
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 150))
+        && data.createdByEmail is string && data.createdByEmail.size() <= 200
+        && data.createdByRole is string && data.createdByRole.size() >= 1 && data.createdByRole.size() <= 40
+        && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 240
+        && data.category in ['technical', 'billing', 'training', 'data', 'other']
+        && data.status in ['open', 'replied', 'resolved']
+        && (!('lastMessagePreview' in data) || (data.lastMessagePreview is string && data.lastMessagePreview.size() <= 500))
+        && data.lastSenderRole in ['school', 'master_admin']
+        && data.unreadByMaster is bool
+        && data.unreadBySchool is bool
+        && data.messageCount is int && data.messageCount >= 0 && data.messageCount <= 10000
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidSupportMessage(data, ticketId, messageId) {
+      return data.keys().hasAll([
+          'id', 'ticketId', 'schoolId', 'senderUid', 'senderName',
+          'senderRole', 'text', 'imageUrls', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ticketId', 'schoolId', 'ticketCreatorUid', 'senderUid',
+          'senderName', 'senderEmail', 'senderRole', 'senderSchoolRole',
+          'text', 'imageUrls', 'createdAt'
+        ])
+        && data.id == messageId
+        && data.ticketId == ticketId
+        && data.schoolId is string && data.schoolId.size() >= 1 && data.schoolId.size() <= 128
+        && (!('ticketCreatorUid' in data) || (data.ticketCreatorUid is string && data.ticketCreatorUid.size() <= 128))
+        && data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 150
+        && (!('senderEmail' in data) || (data.senderEmail is string && data.senderEmail.size() <= 200))
+        && data.senderRole in ['school', 'master_admin']
+        && (!('senderSchoolRole' in data) || (data.senderSchoolRole is string && data.senderSchoolRole.size() <= 40))
+        && data.text is string && data.text.size() <= 3500
+        && data.imageUrls is list && data.imageUrls.size() <= 3
+        && (data.text.size() > 0 || data.imageUrls.size() > 0)
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    match /support_tickets/{ticketId} {
+      allow get: if isValidId(ticketId) && (
+        isMasterAdmin() ||
+        (
+          isSignedIn() && (
+            resource.data.createdByUid == request.auth.uid ||
+            (request.auth.token.schoolId is string && resource.data.schoolId == request.auth.token.schoolId)
+          )
+        )
+      );
+      allow list: if isMasterAdmin() || (
+        isSignedIn() && (
+          resource.data.createdByUid == request.auth.uid ||
+          (request.auth.token.schoolId is string && resource.data.schoolId == request.auth.token.schoolId)
+        )
+      );
+      allow create: if isValidId(ticketId)
+        && isSignedIn()
+        && isValidSupportTicket(request.resource.data, ticketId)
+        && request.resource.data.createdByUid == request.auth.uid
+        && (
+          isMasterAdmin() ||
+          (
+            request.resource.data.lastSenderRole == 'school'
+            && (hasSchoolClaim(request.resource.data.schoolId) || request.resource.data.schoolId == request.auth.uid)
+          )
+        );
+      allow update: if isValidId(ticketId)
+        && isSignedIn()
+        && isValidSupportTicket(request.resource.data, ticketId)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.schoolId == resource.data.schoolId
+        && request.resource.data.createdByUid == resource.data.createdByUid
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (
+          isMasterAdmin() ||
+          (
+            (resource.data.createdByUid == request.auth.uid || hasSchoolClaim(resource.data.schoolId))
+            && (request.resource.data.lastSenderRole == resource.data.lastSenderRole || request.resource.data.lastSenderRole == 'school')
+            && (request.resource.data.status == resource.data.status || request.resource.data.status in ['open', 'resolved'])
+          )
+        );
+      allow delete: if isValidId(ticketId) && isMasterAdmin();
+
+      match /messages/{messageId} {
+        allow get: if isValidId(ticketId) && isValidId(messageId) && (
+          isMasterAdmin() ||
+          (
+            isSignedIn() && (
+              resource.data.senderUid == request.auth.uid ||
+              resource.data.ticketCreatorUid == request.auth.uid ||
+              (request.auth.token.schoolId is string && resource.data.schoolId == request.auth.token.schoolId)
+            )
+          )
+        );
+        allow list: if isValidId(ticketId) && (
+          isMasterAdmin() ||
+          (
+            isSignedIn() && (
+              resource.data.senderUid == request.auth.uid ||
+              resource.data.ticketCreatorUid == request.auth.uid ||
+              (request.auth.token.schoolId is string && resource.data.schoolId == request.auth.token.schoolId)
+            )
+          )
+        );
+        allow create: if isValidId(ticketId)
+          && isValidId(messageId)
+          && isSignedIn()
+          && isValidSupportMessage(request.resource.data, ticketId, messageId)
+          && request.resource.data.senderUid == request.auth.uid
+          && (
+            isMasterAdmin() ||
+            (
+              request.resource.data.senderRole == 'school'
+              && (
+                hasSchoolClaim(request.resource.data.schoolId) ||
+                request.resource.data.ticketCreatorUid == request.auth.uid
+              )
+            )
+          );
+        allow update, delete: if false;
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // Support Video Tutorials (Master Admin writes, Signed-in School Admins read)
+    // -------------------------------------------------------------------------
+    function isValidSupportVideo(data, docId) {
+      return data.keys().hasAll([
+          'id', 'title', 'category', 'videoId', 'embedUrl', 'watchUrl',
+          'thumbnailUrl', 'audience', 'sortOrder', 'isActive',
+          'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'title', 'description', 'category', 'videoId', 'embedUrl',
+          'watchUrl', 'thumbnailUrl', 'audience', 'sortOrder', 'isActive',
+          'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
+        ])
+        && data.id == docId
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 180
+        && (!('description' in data) || (data.description is string && data.description.size() <= 1000))
+        && data.category in ['getting_started', 'fees', 'attendance', 'exams', 'students', 'settings', 'other']
+        && data.videoId is string && data.videoId.matches('^[a-zA-Z0-9_\\-]{11}$')
+        && data.embedUrl is string && data.embedUrl.size() <= 300
+        && data.embedUrl.matches('^https://www\\.youtube(-nocookie)?\\.com/embed/[a-zA-Z0-9_\\-]{11}(\\?.*)?$')
+        && data.watchUrl is string && data.watchUrl.size() <= 300
+        && data.watchUrl.matches('^https://www\\.youtube\\.com/watch\\?v=[a-zA-Z0-9_\\-]{11}.*$')
+        && data.thumbnailUrl is string && data.thumbnailUrl.size() <= 300
+        && data.thumbnailUrl.matches('^https://i\\.ytimg\\.com/vi/[a-zA-Z0-9_\\-]+/.*$')
+        && data.audience in ['admins', 'all']
+        && data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 10000
+        && data.isActive is bool
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 150
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    match /support_videos/{docId} {
+      allow get: if isValidId(docId) && (
+        isMasterAdmin() ||
+        (
+          isSignedIn()
+          && resource.data.isActive == true
+          && (
+            resource.data.audience == 'all' ||
+            request.auth.token.schoolRole in ['super_admin', 'admin']
+          )
+        )
+      );
+      allow list: if isMasterAdmin() || (
+        isSignedIn()
+        && resource.data.isActive == true
+        && (
+          resource.data.audience == 'all' ||
+          request.auth.token.schoolRole in ['super_admin', 'admin']
+        )
+      );
+      allow create: if isValidId(docId)
+        && isMasterAdmin()
+        && isValidSupportVideo(request.resource.data, docId)
+        && request.resource.data.createdByUid == request.auth.uid;
+      allow update: if isValidId(docId)
+        && isMasterAdmin()
+        && isValidSupportVideo(request.resource.data, docId)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.createdByUid == resource.data.createdByUid
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isValidId(docId) && isMasterAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // Public School Websites (Strictly Non-PII, Per-School Isolated)
+    // -------------------------------------------------------------------------
+    function isValidPublicWebsite(data, schoolId) {
+      return data.keys().hasAll([
+          'schoolId', 'schoolCode', 'isPublished', 'updatedAt', 'schoolInfo',
+          'stats', 'notices', 'blogPosts', 'academicPrograms', 'activeClasses',
+          'websiteConfig'
+        ])
+        && data.keys().hasOnly([
+          'schoolId', 'schoolCode', 'isPublished', 'updatedAt', 'schoolInfo',
+          'stats', 'notices', 'blogPosts', 'academicPrograms', 'activeClasses',
+          'websiteConfig'
+        ])
+        && data.schoolId == schoolId
+        && data.schoolCode is string && data.schoolCode.size() <= 64
+        && data.isPublished is bool
+        && data.updatedAt is string && data.updatedAt.size() <= 64
+        && data.schoolInfo is map
+        && data.stats is map
+        && data.notices is list && data.notices.size() <= 100
+        && data.blogPosts is list && data.blogPosts.size() <= 60
+        && data.academicPrograms is list && data.academicPrograms.size() <= 30
+        && data.activeClasses is list && data.activeClasses.size() <= 30
+        && data.websiteConfig is map;
+    }
+
+    function isValidPublicAdmission(data, schoolId, admissionId) {
+      return data.keys().hasAll([
+          'id', 'schoolId', 'applicantNameEn', 'applicantNameBn', 'applyingClass',
+          'gender', 'dob', 'guardianName', 'phone', 'address', 'status',
+          'appliedDate', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'schoolId', 'applicationNo', 'photoUrl', 'applicantNameEn',
+          'applicantNameBn', 'applyingClass', 'gender', 'dob', 'bloodGroup',
+          'guardianName', 'phone', 'email', 'address', 'previousSchool',
+          'gpa', 'remarks', 'status', 'appliedDate', 'createdAt'
+        ])
+        && data.id == admissionId
+        && data.schoolId == schoolId
+        && (!('applicationNo' in data) || (data.applicationNo is string && data.applicationNo.size() <= 64))
+        && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 250000))
+        && data.applicantNameEn is string && data.applicantNameEn.size() >= 1 && data.applicantNameEn.size() <= 160
+        && data.applicantNameBn is string && data.applicantNameBn.size() <= 160
+        && data.applyingClass is string && data.applyingClass.size() >= 1 && data.applyingClass.size() <= 60
+        && data.gender in ['Male', 'Female']
+        && data.dob is string && data.dob.size() >= 1 && data.dob.size() <= 32
+        && (!('bloodGroup' in data) || (data.bloodGroup is string && data.bloodGroup.size() <= 16))
+        && data.guardianName is string && data.guardianName.size() >= 1 && data.guardianName.size() <= 160
+        && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 32
+        && (!('email' in data) || (data.email is string && data.email.size() <= 160))
+        && data.address is string && data.address.size() >= 1 && data.address.size() <= 400
+        && (!('previousSchool' in data) || (data.previousSchool is string && data.previousSchool.size() <= 200))
+        && (!('gpa' in data) || (data.gpa is string && data.gpa.size() <= 20))
+        && (!('remarks' in data) || (data.remarks is string && data.remarks.size() <= 500))
+        && data.status in ['Pending', 'Approved', 'Rejected', 'Enrolled']
+        && data.appliedDate is string && data.appliedDate.size() <= 32
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidPublicMessage(data, schoolId, messageId) {
+      return data.keys().hasAll([
+          'id', 'schoolId', 'senderName', 'phone', 'message',
+          'sentAt', 'isRead', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'schoolId', 'senderName', 'phone', 'email', 'subject',
+          'message', 'sentAt', 'isRead', 'createdAt'
+        ])
+        && data.id == messageId
+        && data.schoolId == schoolId
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 160
+        && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 32
+        && (!('email' in data) || (data.email is string && data.email.size() <= 160))
+        && (!('subject' in data) || (data.subject is string && data.subject.size() <= 200))
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 3000
+        && data.sentAt is string && data.sentAt.size() <= 64
+        && data.isRead is bool
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    match /public_websites/{schoolId} {
+      allow get: if isValidId(schoolId) && (
+        resource == null ||
+        resource.data.isPublished == true ||
+        isMasterAdmin() ||
+        hasSchoolClaim(schoolId)
+      );
+      allow list: if resource.data.isPublished == true || isMasterAdmin();
+      allow create, update: if isValidId(schoolId)
+        && isSignedIn()
+        && isValidPublicWebsite(request.resource.data, schoolId)
+        && (
+          isMasterAdmin() ||
+          (isSchoolStaff(schoolId) && isSchoolActive(schoolId))
+        );
+      allow delete: if isValidId(schoolId) && (
+        isMasterAdmin() ||
+        (isSchoolAdmin(schoolId) && isSchoolActive(schoolId))
+      );
+
+      match /public_admissions/{admissionId} {
+        allow create: if isValidId(schoolId)
+          && isValidId(admissionId)
+          && isValidPublicAdmission(request.resource.data, schoolId, admissionId)
+          && request.resource.data.status == 'Pending';
+        allow get, list: if isValidId(schoolId) && (
+          isMasterAdmin() ||
+          (hasSchoolClaim(schoolId) && isSchoolStaff(schoolId) && isSchoolActive(schoolId))
+        );
+        allow update, delete: if isValidId(schoolId) && isValidId(admissionId) && (
+          isMasterAdmin() ||
+          (hasSchoolClaim(schoolId) && isSchoolStaff(schoolId) && isSchoolActive(schoolId))
+        );
+      }
+
+      match /public_messages/{messageId} {
+        allow create: if isValidId(schoolId)
+          && isValidId(messageId)
+          && isValidPublicMessage(request.resource.data, schoolId, messageId)
+          && request.resource.data.isRead == false;
+        allow get, list: if isValidId(schoolId) && (
+          isMasterAdmin() ||
+          (hasSchoolClaim(schoolId) && isSchoolAdmin(schoolId) && isSchoolActive(schoolId))
+        );
+        allow update, delete: if isValidId(schoolId) && isValidId(messageId) && (
+          isMasterAdmin() ||
+          (hasSchoolClaim(schoolId) && isSchoolAdmin(schoolId) && isSchoolActive(schoolId))
+        );
+      }
+    }
+
+    match /test/{docId} {
+      allow get: if isSignedIn();
+      allow list, write: if false;
+    }
+  }
+}

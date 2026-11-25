@@ -1,0 +1,8 @@
+{
+  "name": "SmartSchoolBDmulti",
+  "description": "Multi-tenant school management SaaS platform with Master Admin school provisioning, manual bKash/Nagad/Bank subscription billing, strict tenant isolation, and full school ERP modules.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

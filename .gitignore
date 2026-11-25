@@ -1,0 +1,15 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+*.zip
+.env*
+!.env.example
+.aistudio/
+data_storage/
+backups/
+secrets/
+*firebase-adminsdk*.json
+
